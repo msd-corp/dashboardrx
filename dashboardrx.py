@@ -3,6 +3,7 @@ import pandas as pd
 import datetime as dt
 from io import BytesIO
 import hashlib
+import altair as alt
 
 # ----------------------
 # Page background color
@@ -83,7 +84,7 @@ if not st.session_state.logged_in:
 # ----------------------
 # Load default Excel from GitHub or uploaded file
 # ----------------------
-GITHUB_EXCEL_URL = "https://raw.githubusercontent.com/username/repo/main/stock.xlsx"  # <-- replace with your raw link
+GITHUB_EXCEL_URL = "https://raw.githubusercontent.com/msd-corp/dashboardrx/main/stock.xlsx"
 uploaded_file = st.file_uploader("📂 Upload Excel File (optional)", type=["xlsx"])
 
 if uploaded_file:
@@ -193,17 +194,40 @@ c3.metric("Expiring <90 Days", df_filtered[df_filtered["Expiry_Status"] == "🟡
 c4.metric("Total Items", df_filtered.shape[0])
 
 # ----------------------
-# Top 10 Critical Facilities (vertical)
+# Top 10 Critical Facilities (horizontal Altair)
 # ----------------------
-critical_threshold = 80  # percent available below this is critical
+critical_threshold = 80
 facility_availability = df_filtered.groupby(facility_col)["Available_Until_Delivery"].apply(
     lambda x: max(0, (x>0).sum()/len(x)*100)
-)
+).reset_index(name="Availability_Percent")
 
-top_facilities = facility_availability[facility_availability < critical_threshold].sort_values().head(10)
+top_facilities = facility_availability[facility_availability["Availability_Percent"] < critical_threshold] \
+    .sort_values("Availability_Percent").head(10)
+
+# Highlight selected facility
+def bar_color(facility_name):
+    if search_facility.strip() and facility_name.lower() in search_facility.strip().lower():
+        return "#28a745"
+    return "#dc3545"
+
+top_facilities["Color"] = top_facilities[facility_col].apply(bar_color)
 
 st.subheader("⚠️ Top 10 Critical Facilities (Stock < 80%)")
-st.bar_chart(top_facilities, height=250)  # vertical bars
+chart = alt.Chart(top_facilities).mark_bar().encode(
+    x=alt.X("Availability_Percent:Q", title="Stock Availability (%)"),
+    y=alt.Y(f"{facility_col}:N", sort="-x", title="Facility"),
+    color=alt.Color("Color:N", scale=None, legend=None),
+    tooltip=[facility_col, "Availability_Percent"]
+).properties(
+    width=600,
+    height=350
+).configure_axis(
+    labelFontSize=14,
+    titleFontSize=16
+).configure_title(
+    fontSize=18
+)
+st.altair_chart(chart, use_container_width=True)
 
 # ----------------------
 # Items expiring soon
@@ -262,3 +286,5 @@ st.markdown("""
 .css-1d391kg{padding-left:0rem;padding-right:0rem;}
 </style>
 """, unsafe_allow_html=True)
+
+
