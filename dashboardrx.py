@@ -40,7 +40,7 @@ if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
 # ----------------------
-# Login screen with logo and green header
+# Login screen
 # ----------------------
 def login_screen():
     try:
@@ -56,7 +56,7 @@ def login_screen():
         </div>
     """, unsafe_allow_html=True)
 
-    login_col = st.columns([1, 2, 1])[1]
+    login_col = st.columns([1,2,1])[1]
     with login_col:
         username = st.text_input("👤 Username", key="username")
         password = st.text_input("🔒 Password", type="password", key="password")
@@ -82,19 +82,15 @@ if not st.session_state.logged_in:
     st.stop()
 
 # ----------------------
-# Load default Excel from GitHub or uploaded file
+# Load Excel from GitHub
 # ----------------------
 GITHUB_EXCEL_URL = "https://raw.githubusercontent.com/msd-corp/dashboardrx/main/stock.xlsx"
-uploaded_file = st.file_uploader("📂 Upload Excel File (optional)", type=["xlsx"])
 
-if uploaded_file:
-    df = pd.read_excel(uploaded_file)
-else:
-    try:
-        df = pd.read_excel(GITHUB_EXCEL_URL)
-    except Exception as e:
-        st.error(f"❌ Could not load Excel from GitHub: {e}")
-        st.stop()
+try:
+    df = pd.read_excel(GITHUB_EXCEL_URL)
+except Exception as e:
+    st.error(f"❌ Could not load Excel from GitHub. Check the URL and network: {e}")
+    st.stop()
 
 df.columns = df.columns.str.strip()
 df = df.loc[:, ~df.columns.str.contains("^Unnamed")]
@@ -124,7 +120,6 @@ df["Days_Left"] = (df[expiry_col] - dt.datetime.today()).dt.days
 df[onhand_col] = pd.to_numeric(df[onhand_col], errors='coerce').fillna(0)
 df[amc_col] = pd.to_numeric(df[amc_col], errors='coerce').fillna(0)
 
-# Expiry status
 def expiry_status(days):
     if pd.isna(days): return "No Expiry"
     if days < 0: return "Expired"
@@ -134,7 +129,7 @@ def expiry_status(days):
 
 df["Expiry_Status"] = df["Days_Left"].apply(expiry_status)
 
-# Projected Stock until next delivery (7 days)
+# Projected Stock
 next_delivery_days = 7
 df["Avg_Daily_Usage"] = df[amc_col] / 30
 df["Projected_Consumption"] = df["Avg_Daily_Usage"] * next_delivery_days
@@ -194,7 +189,7 @@ c3.metric("Expiring <90 Days", df_filtered[df_filtered["Expiry_Status"] == "🟡
 c4.metric("Total Items", df_filtered.shape[0])
 
 # ----------------------
-# Top 10 Critical Facilities (horizontal Altair)
+# Top 10 Critical Facilities (Altair Horizontal)
 # ----------------------
 critical_threshold = 80
 facility_availability = df_filtered.groupby(facility_col)["Available_Until_Delivery"].apply(
@@ -204,7 +199,6 @@ facility_availability = df_filtered.groupby(facility_col)["Available_Until_Deliv
 top_facilities = facility_availability[facility_availability["Availability_Percent"] < critical_threshold] \
     .sort_values("Availability_Percent").head(10)
 
-# Highlight selected facility
 def bar_color(facility_name):
     if search_facility.strip() and facility_name.lower() in search_facility.strip().lower():
         return "#28a745"
@@ -212,46 +206,47 @@ def bar_color(facility_name):
 
 top_facilities["Color"] = top_facilities[facility_col].apply(bar_color)
 
-st.subheader("⚠️ Top 10 Critical Facilities (Stock < 80%)")
-chart = alt.Chart(top_facilities).mark_bar().encode(
-    x=alt.X("Availability_Percent:Q", title="Stock Availability (%)"),
-    y=alt.Y(f"{facility_col}:N", sort="-x", title="Facility"),
-    color=alt.Color("Color:N", scale=None, legend=None),
-    tooltip=[facility_col, "Availability_Percent"]
-).properties(
-    width=600,
-    height=350
-).configure_axis(
-    labelFontSize=14,
-    titleFontSize=16
-).configure_title(
-    fontSize=18
-)
-st.altair_chart(chart, use_container_width=True)
+with st.expander("⚠️ Top 10 Critical Facilities (Stock < 80%)"):
+    chart = alt.Chart(top_facilities).mark_bar().encode(
+        x=alt.X("Availability_Percent:Q", title="Stock Availability (%)"),
+        y=alt.Y(f"{facility_col}:N", sort="-x", title="Facility"),
+        color=alt.Color("Color:N", scale=None, legend=None),
+        tooltip=[facility_col, "Availability_Percent"]
+    ).properties(
+        width=600,
+        height=350
+    ).configure_axis(
+        labelFontSize=14,
+        titleFontSize=16
+    ).configure_title(
+        fontSize=18
+    )
+    st.altair_chart(chart, use_container_width=True)
 
 # ----------------------
-# Items expiring soon
+# Items Expiring Soon
 # ----------------------
-st.subheader("⚠️ Items Expiring Soon")
 df_expiring = df_filtered[df_filtered["Days_Left"] <= 90]
 
-def color_row(r):
-    if r["Expiry_Status"] == "Expired":
-        return ["background-color:#ff9999"] * len(r)
-    elif r["Expiry_Status"] == "⚠️ Expiring <30 days":
-        return ["background-color:#ffe16b"] * len(r)
-    elif r["Expiry_Status"] == "🟡 Expiring <90 days":
-        return ["background-color:#fff4b3"] * len(r)
-    else:
-        return [""] * len(r)
+with st.expander("⚠️ Items Expiring Soon"):
+    def color_row(r):
+        if r["Expiry_Status"] == "Expired":
+            return ["background-color:#ff9999"] * len(r)
+        elif r["Expiry_Status"] == "⚠️ Expiring <30 days":
+            return ["background-color:#ffe16b"] * len(r)
+        elif r["Expiry_Status"] == "🟡 Expiring <90 days":
+            return ["background-color:#fff4b3"] * len(r)
+        else:
+            return [""] * len(r)
 
-if not df_expiring.empty:
-    if df_expiring.size <= 262144:
-        st.dataframe(df_expiring.style.apply(color_row, axis=1).set_properties(**{'font-size':'14px','text-align':'center'}), height=400)
+    if not df_expiring.empty:
+        if df_expiring.size <= 262144:
+            st.dataframe(df_expiring.style.apply(color_row, axis=1)
+                         .set_properties(**{'font-size':'14px','text-align':'center'}), height=400)
+        else:
+            st.dataframe(df_expiring, height=400)
     else:
-        st.dataframe(df_expiring, height=400)
-else:
-    st.info("✅ No items expiring within 90 days.")
+        st.info("✅ No items expiring within 90 days.")
 
 # ----------------------
 # Expandable Details
@@ -286,6 +281,8 @@ st.markdown("""
 .css-1d391kg{padding-left:0rem;padding-right:0rem;}
 </style>
 """, unsafe_allow_html=True)
+
+
 
 
 
