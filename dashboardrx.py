@@ -179,7 +179,7 @@ st.markdown(
 # ----------------------
 st.markdown("""
 <div style='background-color:#0047AB;padding:15px;border-radius:10px'>
-<h1 style='color:white;text-align:center;'>Rx💊 Limpopo Province Pharmaceutical Stock Dashboard</h1>
+<h1 style='color:white;text-align:center;'>masedi💊 Rx_Soln Product Dashboard</h1>
 </div>
 """, unsafe_allow_html=True)
 
@@ -286,5 +286,6 @@ st.markdown("""
 .css-1d391kg{padding-left:0rem;padding-right:0rem;}
 </style>
 """, unsafe_allow_html=True)
+
 
 
