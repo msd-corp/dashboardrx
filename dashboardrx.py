@@ -118,7 +118,10 @@ df[stock_col] = pd.to_numeric(df[stock_col], errors="coerce").fillna(0)
 df[expiry_col] = pd.to_datetime(df[expiry_col], errors="coerce")
 df["Days_Left"] = (df[expiry_col] - dt.datetime.today()).dt.days
 df[onhand_col] = pd.to_numeric(df[onhand_col], errors='coerce').fillna(0)
-df[amc_col] = pd.to_numeric(df[amc_col].astype(str).str.replace(",", "."), errors='coerce').fillna(0)
+
+# Fix AMC decimal if comma exists
+df[amc_col] = df[amc_col].astype(str).str.replace(",", ".")
+df[amc_col] = pd.to_numeric(df[amc_col], errors='coerce').fillna(0)
 
 def expiry_status(days):
     if pd.isna(days): return "No Expiry"
@@ -130,51 +133,48 @@ def expiry_status(days):
 df["Expiry_Status"] = df["Days_Left"].apply(expiry_status)
 
 # ----------------------
-# HYBRID ITEM KEY & STOCK-OUT LOGIC
+# Hybrid Item Key for NSN + Description
 # ----------------------
 df[nsn_col] = df[nsn_col].astype(str).str.strip()
 df.loc[df[nsn_col].isin(["", "nan", "None"]), nsn_col] = pd.NA
 
 df["Item_Key"] = df.apply(
     lambda r:
-        f"{r[facility_col]}|{r[nsn_col]}|{r[desc_col]}"
-        if pd.notna(r[nsn_col])
+        f"{r[facility_col]}|{r[nsn_col]}|{r[desc_col]}" if pd.notna(r[nsn_col])
         else f"{r[facility_col]}|{r[desc_col]}",
     axis=1
 )
 
-# Aggregate batch-level On Hand
-stock_totals = (
-    df
-    .groupby("Item_Key", as_index=False)
-    .agg(
-        Facility_Name=(facility_col, "first"),
-        Description=(desc_col, "first"),
-        NSN=(nsn_col, "first"),
-        Total_Stock=(onhand_col, "sum"),
-        AMC=(amc_col, "first")
-    )
+# ----------------------
+# Stock-out Calculation (AMC -> ADU -> 7-day Lead)
+# ----------------------
+LEAD_TIME_DAYS = 7
+grouped = (
+    df.groupby("Item_Key", as_index=False)
+      .agg(
+          Facility_Name=(facility_col, "first"),
+          Description=(desc_col, "first"),
+          NSN=(nsn_col, "first"),
+          Total_Stock=(onhand_col, "sum"),
+          AMC=(amc_col, "first")
+      )
 )
 
-LEAD_TIME_DAYS = 7
-stock_totals["ADU"] = stock_totals["AMC"] / 30
-stock_totals["Stock_Balance_After_Lead"] = stock_totals["Total_Stock"] - (stock_totals["ADU"] * LEAD_TIME_DAYS)
-stock_totals["Stock_Status"] = stock_totals["Stock_Balance_After_Lead"].apply(
+grouped["ADU"] = grouped["AMC"] / 30
+grouped["Stock_Balance_After_Lead"] = grouped["Total_Stock"] - (grouped["ADU"] * LEAD_TIME_DAYS)
+grouped["Stock_Status"] = grouped["Stock_Balance_After_Lead"].apply(
     lambda x: "🔴 OUT OF STOCK" if x <= 0 else "🟢 OK"
 )
 
-# Merge back to batch-level
+# Merge back to batch-level df
 df = df.merge(
-    stock_totals[["Item_Key", "Total_Stock", "ADU", "Stock_Balance_After_Lead", "Stock_Status"]],
+    grouped[["Item_Key", "Total_Stock", "ADU", "Stock_Balance_After_Lead", "Stock_Status"]],
     on="Item_Key",
     how="left"
 )
 
-df["Available_Until_Delivery"] = df["Stock_Balance_After_Lead"]
-df["At_Risk_Flag"] = df["Available_Until_Delivery"] <= 0
-
 # ----------------------
-# Sidebar filters
+# Sidebar Filters
 # ----------------------
 st.sidebar.subheader("🔍 Filters")
 search_facility = st.sidebar.text_input("🏥 Facility")
@@ -190,10 +190,15 @@ if search_text.strip():
     df_filtered = df_filtered[df_filtered[desc_col].str.contains(search_text, case=False, na=False)]
 
 # ----------------------
-# Stock Availability Top Card
+# Stock Availability Top Card (Filtered)
 # ----------------------
-total_items = stock_totals.shape[0]  # number of unique items
-available_items = (stock_totals["Stock_Balance_After_Lead"] > 0).sum()
+filtered_items = df_filtered.groupby("Item_Key").agg({
+    "Total_Stock": "first",
+    "Stock_Balance_After_Lead": "first"
+}).reset_index()
+
+total_items = filtered_items.shape[0]
+available_items = (filtered_items["Stock_Balance_After_Lead"] > 0).sum()
 percent_available = available_items / total_items * 100 if total_items > 0 else 0
 
 st.subheader("📊 Stock Availability Until Next Delivery (7 days)")
@@ -222,13 +227,13 @@ c1, c2, c3, c4 = st.columns(4)
 c1.metric("Expired Items", df_filtered[df_filtered["Expiry_Status"] == "Expired"].shape[0])
 c2.metric("Expiring <30 Days", df_filtered[df_filtered["Expiry_Status"] == "⚠️ Expiring <30 days"].shape[0])
 c3.metric("Expiring <90 Days", df_filtered[df_filtered["Expiry_Status"] == "🟡 Expiring <90 days"].shape[0])
-c4.metric("Total Items", total_items)
+c4.metric("Total Items", filtered_items.shape[0])
 
 # ----------------------
 # Top 10 Critical Facilities (Altair Horizontal)
 # ----------------------
 critical_threshold = 80
-facility_availability = df_filtered.groupby(facility_col)["Available_Until_Delivery"].apply(
+facility_availability = df_filtered.groupby(facility_col)["Stock_Balance_After_Lead"].apply(
     lambda x: max(0, (x>0).sum()/len(x)*100)
 ).reset_index(name="Availability_Percent")
 
@@ -288,7 +293,7 @@ with st.expander("⚠️ Items Expiring Soon"):
 # Expandable Details
 # ----------------------
 with st.expander("📋 View Detailed Facility Stock Data"):
-    st.dataframe(df_filtered.sort_values(by="Available_Until_Delivery"), height=500)
+    st.dataframe(df_filtered.sort_values(by="Stock_Balance_After_Lead"), height=500)
 
 # ----------------------
 # Download button
