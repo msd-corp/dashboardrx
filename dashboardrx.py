@@ -3,20 +3,18 @@ import pandas as pd
 import datetime as dt
 from io import BytesIO
 import hashlib
+import altair as alt
 
 # ----------------------
 # Page background color
 # ----------------------
-st.markdown(
-    """
-    <style>
-    html, body, [class*="css"]  {
-        background-color: #f0f8ff !important;  /* light blue */
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
+st.markdown("""
+<style>
+html, body, [class*="css"]  {
+    background-color: #f0f8ff !important;
+}
+</style>
+""", unsafe_allow_html=True)
 
 # ----------------------
 # Streamlit page config
@@ -51,18 +49,29 @@ def login_screen():
         st.warning("⚠️ Logo not found. Place 'logo.png' in the same folder.")
 
     st.markdown("""
-        <div style='text-align:center; padding: 10px;'>
-            <h1 style='color:#0047AB;'>Rx💊 Pharmaceutical Products Dashboard</h1>
-            <h3 style='margin-top:-10px; color:#888;'>Secure Login</h3>
-            <hr style='margin-top:15px;'>
+        <div style='text-align:center; padding: 10px; background-color:#28a745; border-radius:8px;'>
+            <h1 style='color:white;'>Rx💊 Pharmaceutical Products Dashboard</h1>
+            <h3 style='margin-top:-10px; color:white;'>Secure Login</h3>
+            <hr style='margin-top:15px; border-color:white;'>
         </div>
     """, unsafe_allow_html=True)
 
-    login_col = st.columns([1, 2, 1])[1]
+    login_col = st.columns([1,2,1])[1]
     with login_col:
-        username = st.text_input("👤 Username")
-        password = st.text_input("🔒 Password", type="password")
-        if st.button("Login", use_container_width=True):
+        username = st.text_input("👤 Username", key="username")
+        password = st.text_input("🔒 Password", type="password", key="password")
+        st.markdown("""
+            <style>
+            div.stButton > button:first-child {
+                background-color: #4CAF50;
+                color: white;
+                height: 3em;
+                width: 100%;
+                font-size: 20px;
+            }
+            </style>
+        """, unsafe_allow_html=True)
+        if st.button("Login"):
             if username in USERS and USERS[username] == hash_password(password):
                 st.session_state.logged_in = True
             else:
@@ -73,160 +82,189 @@ if not st.session_state.logged_in:
     st.stop()
 
 # ----------------------
-# Dashboard header
+# Load Excel from GitHub
 # ----------------------
-st.markdown("""
-    <div style='background-color:#0047AB;padding:15px;border-radius:10px'>
-        <h1 style='color:white;text-align:center;'>Rx💊 Limpopo Province Pharmaceutical Stock Dashboard</h1>
-    </div>
-""", unsafe_allow_html=True)
+GITHUB_EXCEL_URL = "https://raw.githubusercontent.com/msd-corp/dashboardrx/main/stock.xlsx"
 
-st.write("Upload your Excel file to start analyzing pharmaceutical stock levels across facilities.")
-uploaded_file = st.file_uploader("📂 Upload Excel File", type=["xlsx", "xls"])
+try:
+    df = pd.read_excel(GITHUB_EXCEL_URL)
+except Exception as e:
+    st.error(f"❌ Could not load Excel from GitHub. Check the URL and network: {e}")
+    st.stop()
 
-if uploaded_file:
-    df = pd.read_excel(uploaded_file)
-    df.columns = df.columns.str.strip()
-    df = df.loc[:, ~df.columns.str.contains("^Unnamed")]
+df.columns = df.columns.str.strip()
+df = df.loc[:, ~df.columns.str.contains("^Unnamed")]
 
-    # ----------------------
-    # Identify columns
-    # ----------------------
-    facility_col = None
-    for c in df.columns:
-        if c.lower() == "facility name":
-            facility_col = c
-            break
-    if not facility_col:
-        for c in df.columns:
-            if c.lower() in ["facility", "hospital", "clinic"]:
-                facility_col = c
-                break
+# ----------------------
+# Columns setup
+# ----------------------
+facility_col = df.columns[1]  # Facility Name
+onhand_col = df.columns[7]    # OnHand
+nsn_col = df.columns[2]       # NSN
+amc_col = df.columns[5]       # AMC
+desc_col = next((c for c in df.columns if c.strip().lower() in ["description","item description","medicine","nsn description"]), None)
+stock_col = next((c for c in df.columns if c.strip().lower() in ["on hand","stock","stock_on_hand","qty","quantity"]), None)
+expiry_col = next((c for c in df.columns if c.strip().lower() in ["expiry","expiry date","expiration","exp"]), None)
 
-    desc_col = next(
-        (c for c in df.columns if c.lower() in ["description", "item description", "medicine", "nsn description"]),
-        None)
-    stock_col = next((c for c in df.columns if c.lower() in ["on hand", "stock", "stock_on_hand", "qty", "quantity"]),
-                     None)
-    expiry_col = next((c for c in df.columns if c.lower() in ["expiry", "expiry date", "expiration", "exp"]), None)
-    amc_col = next(
-        (c for c in df.columns if c.lower() in ["amc", "average monthly consumption", "avg monthly consumption"]),
-        None)
-    nsn_col = next((c for c in df.columns if c.lower() == "nsn"), None)
+missing = [name for name, col in zip(["Item/Description", "Stock", "Expiry"], [desc_col, stock_col, expiry_col]) if col is None]
+if missing:
+    st.error("❌ Missing required columns: " + ", ".join(missing))
+    st.stop()
 
-    missing = [name for name, col in
-               zip(["Facility", "Description", "Stock", "Expiry", "AMC"], [facility_col, desc_col, stock_col, expiry_col, amc_col]) if
-               col is None]
-    if missing:
-        st.error("❌ Missing required columns: " + ", ".join(missing))
-        st.stop()
+# ----------------------
+# Data preprocessing
+# ----------------------
+df[stock_col] = pd.to_numeric(df[stock_col], errors="coerce").fillna(0)
+df[expiry_col] = pd.to_datetime(df[expiry_col], errors="coerce")
+df["Days_Left"] = (df[expiry_col] - dt.datetime.today()).dt.days
+df[onhand_col] = pd.to_numeric(df[onhand_col], errors='coerce').fillna(0)
+df[amc_col] = pd.to_numeric(df[amc_col].astype(str).str.replace(",", "."), errors='coerce').fillna(0)
 
-    # ----------------------
-    # Clean numeric and date columns
-    # ----------------------
-    df[stock_col] = pd.to_numeric(df[stock_col], errors="coerce").fillna(0)
+def expiry_status(days):
+    if pd.isna(days): return "No Expiry"
+    if days < 0: return "Expired"
+    if days <= 30: return "⚠️ Expiring <30 days"
+    if days <= 90: return "🟡 Expiring <90 days"
+    return "🟢 OK"
 
-    # AMC: fix comma decimals
-    df[amc_col] = df[amc_col].astype(str).str.replace(",", ".", regex=False)
-    df[amc_col] = pd.to_numeric(df[amc_col], errors="coerce").fillna(0)
+df["Expiry_Status"] = df["Days_Left"].apply(expiry_status)
 
-    df[expiry_col] = pd.to_datetime(df[expiry_col], errors="coerce")
-    df["Days_Left"] = (df[expiry_col] - dt.datetime.today()).dt.days
+# ----------------------
+# HYBRID ITEM KEY & STOCK-OUT LOGIC
+# ----------------------
+df[nsn_col] = df[nsn_col].astype(str).str.strip()
+df.loc[df[nsn_col].isin(["", "nan", "None"]), nsn_col] = pd.NA
 
-    # ----------------------
-    # Expiry status
-    # ----------------------
-    def expiry_status(days):
-        if pd.isna(days): return "No Expiry"
-        if days < 0: return "Expired"
-        if days <= 30: return "⚠️ Expiring <30 days"
-        if days <= 90: return "🟡 Expiring <90 days"
-        return "🟢 OK"
-
-    df["Expiry_Status"] = df["Days_Left"].apply(expiry_status)
-
-    # ----------------------
-    # Hybrid Item Key (NSN + Description / Description alone)
-    # ----------------------
-    if nsn_col:
-        df[nsn_col] = df[nsn_col].astype(str).str.strip()
-        df.loc[df[nsn_col].isin(["", "nan", "None"]), nsn_col] = pd.NA
-    else:
-        df['NSN'] = pd.NA
-        nsn_col = 'NSN'
-
-    df["Item_Key"] = df.apply(
-        lambda r: f"{r[facility_col]}|{r[nsn_col]}|{r[desc_col]}" if pd.notna(r[nsn_col])
+df["Item_Key"] = df.apply(
+    lambda r:
+        f"{r[facility_col]}|{r[nsn_col]}|{r[desc_col]}"
+        if pd.notna(r[nsn_col])
         else f"{r[facility_col]}|{r[desc_col]}",
-        axis=1
-    )
+    axis=1
+)
 
-    # ----------------------
-    # Grouping for stock-out calculation
-    # ----------------------
-    LEAD_TIME_DAYS = 7
-    grouped = df.groupby("Item_Key", as_index=False).agg(
+# Aggregate batch-level On Hand
+stock_totals = (
+    df
+    .groupby("Item_Key", as_index=False)
+    .agg(
         Facility_Name=(facility_col, "first"),
         Description=(desc_col, "first"),
         NSN=(nsn_col, "first"),
-        Total_Stock=(stock_col, "sum"),
+        Total_Stock=(onhand_col, "sum"),
         AMC=(amc_col, "first")
     )
+)
 
-    grouped["ADU"] = grouped["AMC"] / 30
-    grouped["Stock_Balance_After_Lead"] = grouped["Total_Stock"] - (grouped["ADU"] * LEAD_TIME_DAYS)
-    grouped["Stock_Status"] = grouped["Stock_Balance_After_Lead"].apply(
-        lambda x: "🔴 OUT OF STOCK" if x <= 0 else "🟢 OK"
+LEAD_TIME_DAYS = 7
+stock_totals["ADU"] = stock_totals["AMC"] / 30
+stock_totals["Stock_Balance_After_Lead"] = stock_totals["Total_Stock"] - (stock_totals["ADU"] * LEAD_TIME_DAYS)
+stock_totals["Stock_Status"] = stock_totals["Stock_Balance_After_Lead"].apply(
+    lambda x: "🔴 OUT OF STOCK" if x <= 0 else "🟢 OK"
+)
+
+# Merge back to batch-level
+df = df.merge(
+    stock_totals[["Item_Key", "Total_Stock", "ADU", "Stock_Balance_After_Lead", "Stock_Status"]],
+    on="Item_Key",
+    how="left"
+)
+
+df["Available_Until_Delivery"] = df["Stock_Balance_After_Lead"]
+df["At_Risk_Flag"] = df["Available_Until_Delivery"] <= 0
+
+# ----------------------
+# Sidebar filters
+# ----------------------
+st.sidebar.subheader("🔍 Filters")
+search_facility = st.sidebar.text_input("🏥 Facility")
+search_text = st.sidebar.text_input("🔎 Item")
+
+df_filtered = df.copy()
+if search_facility.strip():
+    df_filtered[facility_col] = df_filtered[facility_col].astype(str)
+    df_filtered = df_filtered[df_filtered[facility_col].str.contains(search_facility, case=False, na=False)]
+
+if search_text.strip():
+    df_filtered[desc_col] = df_filtered[desc_col].astype(str)
+    df_filtered = df_filtered[df_filtered[desc_col].str.contains(search_text, case=False, na=False)]
+
+# ----------------------
+# Stock Availability Top Card
+# ----------------------
+total_items = stock_totals.shape[0]  # number of unique items
+available_items = (stock_totals["Stock_Balance_After_Lead"] > 0).sum()
+percent_available = available_items / total_items * 100 if total_items > 0 else 0
+
+st.subheader("📊 Stock Availability Until Next Delivery (7 days)")
+st.markdown(
+    f"<div style='background-color:#d4edda;padding:20px;border-radius:12px;text-align:center;"
+    f"font-weight:bold;font-size:24px;color:#155724;'>"
+    f"✅ Stock Availability: {available_items} / {total_items} ({percent_available:.1f}%)"
+    f"</div>",
+    unsafe_allow_html=True
+)
+
+# ----------------------
+# Dashboard header (blue)
+# ----------------------
+st.markdown("""
+<div style='background-color:#0047AB;padding:15px;border-radius:10px'>
+<h1 style='color:white;text-align:center;'>masedi💊 Rx_Soln Product Dashboard</h1>
+</div>
+""", unsafe_allow_html=True)
+
+# ----------------------
+# Stock Summary
+# ----------------------
+st.subheader("📊 Stock Summary")
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Expired Items", df_filtered[df_filtered["Expiry_Status"] == "Expired"].shape[0])
+c2.metric("Expiring <30 Days", df_filtered[df_filtered["Expiry_Status"] == "⚠️ Expiring <30 days"].shape[0])
+c3.metric("Expiring <90 Days", df_filtered[df_filtered["Expiry_Status"] == "🟡 Expiring <90 days"].shape[0])
+c4.metric("Total Items", total_items)
+
+# ----------------------
+# Top 10 Critical Facilities (Altair Horizontal)
+# ----------------------
+critical_threshold = 80
+facility_availability = df_filtered.groupby(facility_col)["Available_Until_Delivery"].apply(
+    lambda x: max(0, (x>0).sum()/len(x)*100)
+).reset_index(name="Availability_Percent")
+
+top_facilities = facility_availability[facility_availability["Availability_Percent"] < critical_threshold] \
+    .sort_values("Availability_Percent").head(10)
+
+def bar_color(facility_name):
+    if search_facility.strip() and facility_name.lower() in search_facility.strip().lower():
+        return "#28a745"
+    return "#dc3545"
+
+top_facilities["Color"] = top_facilities[facility_col].apply(bar_color)
+
+with st.expander("⚠️ Top 10 Critical Facilities (Stock < 80%)"):
+    chart = alt.Chart(top_facilities).mark_bar().encode(
+        x=alt.X("Availability_Percent:Q", title="Stock Availability (%)"),
+        y=alt.Y(f"{facility_col}:N", sort="-x", title="Facility"),
+        color=alt.Color("Color:N", scale=None, legend=None),
+        tooltip=[facility_col, "Availability_Percent"]
+    ).properties(
+        width=600,
+        height=350
+    ).configure_axis(
+        labelFontSize=14,
+        titleFontSize=16
+    ).configure_title(
+        fontSize=18
     )
+    st.altair_chart(chart, use_container_width=True)
 
-    # Merge back to batch-level df
-    df = df.merge(
-        grouped[["Item_Key", "Total_Stock", "ADU", "Stock_Balance_After_Lead", "Stock_Status"]],
-        on="Item_Key",
-        how="left"
-    )
+# ----------------------
+# Items Expiring Soon
+# ----------------------
+df_expiring = df_filtered[df_filtered["Days_Left"] <= 90]
 
-    # ----------------------
-    # Filters
-    # ----------------------
-    st.subheader("🔍 Filters")
-    col1, col2 = st.columns([2, 3])
-    with col1:
-        search_facility = st.text_input("🏥 Search Facility")
-    with col2:
-        search_text = st.text_input("🔎 Search Item")
-
-    df_filtered = df.copy()
-    if search_facility.strip():
-        df_filtered = df_filtered[df_filtered[facility_col].str.contains(search_facility, case=False, na=False)]
-    if search_text.strip():
-        df_filtered = df_filtered[df_filtered[desc_col].str.contains(search_text, case=False, na=False)]
-
-    # ----------------------
-    # Stock Summary with distinct-item logic
-    # ----------------------
-    st.subheader("📊 Stock Summary")
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-
-    c1.metric("Expired Items", df_filtered[df_filtered["Expiry_Status"] == "Expired"].shape[0])
-    c2.metric("Expiring <30 Days", df_filtered[df_filtered["Expiry_Status"] == "⚠️ Expiring <30 days"].shape[0])
-    c3.metric("Expiring <90 Days", df_filtered[df_filtered["Expiry_Status"] == "🟡 Expiring <90 days"].shape[0])
-
-    distinct_items_count = df_filtered['Item_Key'].nunique()
-    c4.metric("Total Items", distinct_items_count)
-
-    out_of_stock_count = grouped[grouped["Stock_Status"] == "🔴 OUT OF STOCK"]['Item_Key'].nunique()
-    covered_items_count = grouped[grouped["Stock_Status"] == "🟢 OK"]['Item_Key'].nunique()
-
-    c5.metric("🚨 Items Out of Stock (7-Day Risk)", out_of_stock_count)
-    c6.metric("📦 Items Covered", covered_items_count)
-
-    # ----------------------
-    # Items expiring soon (batch-level)
-    # ----------------------
-    st.subheader("⚠️ Items Expiring Soon")
-    df_expiring = df_filtered[df_filtered["Days_Left"] <= 90]
-
+with st.expander("⚠️ Items Expiring Soon"):
     def color_row(r):
         if r["Expiry_Status"] == "Expired":
             return ["background-color:#ff9999"] * len(r)
@@ -238,46 +276,44 @@ if uploaded_file:
             return [""] * len(r)
 
     if not df_expiring.empty:
-        st.dataframe(df_expiring.style.apply(color_row, axis=1), height=400, use_container_width=True)
+        if df_expiring.size <= 262144:
+            st.dataframe(df_expiring.style.apply(color_row, axis=1)
+                         .set_properties(**{'font-size':'14px','text-align':'center'}), height=400)
+        else:
+            st.dataframe(df_expiring, height=400)
     else:
         st.info("✅ No items expiring within 90 days.")
 
-    st.dataframe(df_filtered, height=500, use_container_width=True)
+# ----------------------
+# Expandable Details
+# ----------------------
+with st.expander("📋 View Detailed Facility Stock Data"):
+    st.dataframe(df_filtered.sort_values(by="Available_Until_Delivery"), height=500)
 
-    # ----------------------
-    # Download button
-    # ----------------------
-    @st.cache_data
-    def to_excel(data):
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            data.to_excel(writer, index=False, sheet_name="Filtered")
-        return output.getvalue()
+# ----------------------
+# Download button
+# ----------------------
+@st.cache_data
+def to_excel(data):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        data.to_excel(writer, index=False, sheet_name="Filtered")
+    return output.getvalue()
 
-    st.download_button(
-        label="💾 Download Excel",
-        data=to_excel(df_filtered),
-        file_name="filtered_stock.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True
-    )
-
-else:
-    st.info("⬆️ Upload an Excel file to begin.")
+st.download_button(
+    label="💾 Download Excel",
+    data=to_excel(df_filtered),
+    file_name="filtered_stock.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    use_container_width=True
+)
 
 # ----------------------
 # Cleanup padding
 # ----------------------
 st.markdown("""
-    <style>
-    .css-18e3th9{padding-top:0rem;}
-    .css-1d391kg{padding-left:0rem;padding-right:0rem;}
-    </style>
+<style>
+.css-18e3th9{padding-top:0rem;}
+.css-1d391kg{padding-left:0rem;padding-right:0rem;}
+</style>
 """, unsafe_allow_html=True)
-
-
-
-
-
-
-
